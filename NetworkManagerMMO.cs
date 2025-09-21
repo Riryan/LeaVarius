@@ -43,7 +43,7 @@ public partial class NetworkManagerMMO : NetworkManager
     [Header("Logout")]
     [Tooltip("Players shouldn't be able to log out instantly to flee combat. There should be a delay.")]
     public float combatLogoutDelay = 5;
-
+    [HideInInspector] public bool changingCharacters = false;
     [Header("Character Selection")]
     public int selection = -1;
     public Transform[] selectionLocations;
