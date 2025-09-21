@@ -1,11 +1,29 @@
 ﻿using UnityEngine;
-using UnityEngine.Events;
 using Mirror;
 
-[RequireComponent(typeof(Health))] 
+[DisallowMultipleComponent]
 public abstract partial class Energy : NetworkBehaviour
 {
     [SyncVar] int _current = 0;
+
+    [SerializeField] bool spawnFull = false;
+    [SerializeField] float recoveryInterval = 1f;
+
+    int? _pendingApply;
+    int _lastMax = -1;
+    float _recoveryTimer = 0f;
+
+    public abstract int max { get; }
+    public abstract int recoveryRate { get; }
+    public abstract int drainRate { get; }
+
+    public float Percent()
+    {
+        int m = max;
+        if (m <= 0) return 0f;
+        int c = _current > m ? m : _current;
+        return (float)c / m;
+    }
 
     public int current
     {
@@ -14,76 +32,81 @@ public abstract partial class Energy : NetworkBehaviour
             int m = max;
             return _current > m ? m : _current;
         }
+        [Server]
         set
         {
-            if (!isServer) return;
-            bool wasEmpty = _current == 0;
-            int m = max;
-            int v = value;
-            if (v < 0) v = 0;
-            if (v > m) v = m;
+            int v = value < 0 ? 0 : value;
             _current = v;
-            if (_current == 0 && !wasEmpty)
-                onEmpty.Invoke();
+            if (max <= 0) _pendingApply = v;
+            else _pendingApply = null;
         }
     }
 
-    public abstract int max { get; }
-    public abstract int recoveryRate { get; }
-    public abstract int drainRate { get; }
+    protected Health health;
 
-    [Tooltip("Reference wired automatically if left empty.")]
-    public Health health;
-
-    [Tooltip("If true, energy starts at max on server spawn.")]
-    public bool spawnFull = true;
-
-    [Header("Events")]
-    public UnityEvent onEmpty;
-
-    void Awake()
+    protected virtual void Awake()
     {
-        if (health == null) health = GetComponent<Health>();
+        health = GetComponent<Health>();
     }
 
-#if UNITY_SERVER || UNITY_EDITOR
     public override void OnStartServer()
     {
-        if (spawnFull) current = max;
-        InvokeRepeating(nameof(Recover), 1f, 1f);
+        base.OnStartServer();
+        _lastMax = max;
+        if (spawnFull && _pendingApply == null && _current <= 0 && _lastMax > 0)
+            _current = _lastMax;
+        _recoveryTimer = 0f;
     }
 
-    void OnDisable()
+    [ServerCallback]
+    void Update()
     {
-        if (isServer) CancelInvoke(nameof(Recover));
-    }
+        if (_pendingApply.HasValue && max > 0)
+        {
+            _current = _pendingApply.Value < 0 ? 0 : _pendingApply.Value;
+            _pendingApply = null;
+        }
 
-    void OnDestroy()
-    {
-        if (isServer) CancelInvoke(nameof(Recover));
-    }
-#endif
-
-    public float Percent()
-    {
-        int m = max;
-        return (m > 0 && current > 0) ? (float)current / m : 0f;
+        if (max > 0 && health != null && health.current > 0 && recoveryRate > 0 && _current < max)
+        {
+            _recoveryTimer += Time.deltaTime;
+            if (_recoveryTimer >= recoveryInterval)
+            {
+                int next = _current + recoveryRate;
+                if (next > max) next = max;
+                current = next;
+                _recoveryTimer = 0f;
+            }
+        }
+        else
+        {
+            _recoveryTimer = 0f;
+        }
     }
 
 #if UNITY_SERVER || UNITY_EDITOR
     [Server]
-    public void Recover()
+    public void Recovering()
     {
         if (!enabled || health == null) return;
-        if (health.current > 0 && recoveryRate > 0)
-            current = _current + recoveryRate;
+        if (health.current > 0 && recoveryRate > 0 && _current < max)
+        {
+            int next = _current + recoveryRate;
+            if (next > max) next = max;
+            current = next;
+        }
     }
+
     [Server]
     public void Draining()
     {
         if (!enabled || health == null) return;
-        if (health.current > 0 && drainRate > 0)
-            current = _current - drainRate;
+        if (health.current > 0 && drainRate > 0 && _current > 0)
+        {
+            int next = _current - drainRate;
+            if (next < 0) next = 0;
+            current = next;
+        }
     }
 #endif
 }
